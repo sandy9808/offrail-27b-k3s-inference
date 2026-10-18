@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Small macOS sshpass replacement using OpenSSH's SSH_ASKPASS hook."""
+import os
+import sys
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        return 0
+    password = os.environ.get("SSHPASS", "")
+    i = 0
+    command = []
+    while i < len(args):
+        arg = args[i]
+        if arg == "-d" or (arg.startswith("-d") and len(arg) > 2):
+            fd = int(args[i + 1] if arg == "-d" else arg[2:])
+            if arg == "-d":
+                i += 1
+            password = os.read(fd, 4096).decode("utf-8", "replace").rstrip("\r\n")
+        elif arg == "-p" or (arg.startswith("-p") and len(arg) > 2):
+            password = args[i + 1] if arg == "-p" else arg[2:]
+            if arg == "-p":
+                i += 1
+        elif arg == "-P":
+            i += 1
+        elif arg in ("-e",):
+            pass
+        else:
+            command = args[i:]
+            break
+        i += 1
+    if not command:
+        return 0
+    here = os.path.dirname(os.path.abspath(__file__))
+    os.environ["SSHPASS_VALUE"] = password
+    os.environ["SSH_ASKPASS"] = os.path.join(here, "ssh_askpass_helper.sh")
+    os.environ["SSH_ASKPASS_REQUIRE"] = "force"
+    os.environ.setdefault("DISPLAY", ":0")
+    os.execvp(command[0], command)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

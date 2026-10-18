@@ -1,0 +1,128 @@
+---
+- name: Configure self-signed HTTPS for Odysseus and Offrail
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Install Nginx and OpenSSL
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - openssl
+        state: present
+        update_cache: true
+      become: true
+      when: tls_enabled | bool
+
+    - name: Add live TLS names to target hosts file
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ tls_lan_ip | regex_escape }}\s+.*{{ item | regex_escape }}.*$'
+        line: '{{ tls_lan_ip }} {{ item }}'
+        state: present
+      loop:
+        - '{{ tls_hostname }}'
+        - '{{ tls_model_hostname }}'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Create TLS directory
+      ansible.builtin.file:
+        path: '{{ tls_certificate_dir }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Render self-signed certificate configuration
+      ansible.builtin.template:
+        src: ../templates/tls-openssl.cnf.j2
+        dest: '{{ tls_certificate_dir }}/openssl.cnf'
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Generate self-signed certificate with DNS and IP SANs
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -newkey
+          - rsa:4096
+          - -sha256
+          - -nodes
+          - -days
+          - '{{ tls_valid_days | string }}'
+          - -keyout
+          - '{{ tls_private_key_file }}'
+          - -out
+          - '{{ tls_certificate_file }}'
+          - -config
+          - '{{ tls_certificate_dir }}/openssl.cnf'
+      args:
+        creates: '{{ tls_certificate_file }}'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Restrict certificate private-key permissions
+      ansible.builtin.file:
+        path: '{{ tls_private_key_file }}'
+        owner: root
+        group: root
+        mode: '0600'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Install Nginx TLS virtual hosts
+      ansible.builtin.template:
+        src: ../templates/offrail-nginx.conf.j2
+        dest: /etc/nginx/sites-available/offrail-tls
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+      when: tls_enabled | bool
+
+    - name: Enable Nginx TLS virtual hosts
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/offrail-tls
+        dest: /etc/nginx/sites-enabled/offrail-tls
+        state: link
+      become: true
+      when: tls_enabled | bool
+
+    - name: Disable Nginx default site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      become: true
+      when: tls_enabled | bool
+
+    - name: Validate Nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+      become: true
+      when: tls_enabled | bool
+
+    - name: Enable and restart Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: restarted
+      become: true
+      when: tls_enabled | bool
+
+    - name: Verify HTTPS reverse proxy for Odysseus
+      ansible.builtin.uri:
+        url: 'https://{{ tls_hostname }}/api/health'
+        validate_certs: false
+        status_code: 200
+      register: tls_odysseus_health
+      retries: 15
+      delay: 2
+      until: tls_odysseus_health.status == 200
+      when: tls_enabled | bool

@@ -1,0 +1,18 @@
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = {{ tls_hostname }}
+
+[v3_req]
+subjectAltName = @alt_names
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = {{ tls_hostname }}
+DNS.2 = {{ tls_model_hostname }}
+IP.1 = {{ tls_lan_ip }}

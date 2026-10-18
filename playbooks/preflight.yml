@@ -1,0 +1,50 @@
+---
+- name: Verify K3s Offrail prerequisites
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Verify NVIDIA driver and GPU are available
+      ansible.builtin.command: nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
+      register: gpu_probe
+      changed_when: false
+      failed_when: gpu_probe.rc != 0 or (gpu_probe.stdout | trim | length == 0)
+
+    - name: Display detected GPU
+      ansible.builtin.debug:
+        var: gpu_probe.stdout_lines
+
+    - name: Check Docker availability on the Ansible controller
+      ansible.builtin.command: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}'
+      register: controller_docker
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Report controller Docker state
+      ansible.builtin.debug:
+        msg: >-
+          Controller Docker is unavailable. This blocks building the model image
+          locally, but does not block deployment of an already-pushed image.
+      when: controller_docker.rc != 0
+
+    - name: Verify K3s binary exists when installation is not requested
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      changed_when: false
+      when: not (install_k3s | bool)
+
+    - name: Check K3s service state when installation is not requested
+      ansible.builtin.command: systemctl is-active k3s
+      register: k3s_service
+      changed_when: false
+      failed_when: false
+      when: not (install_k3s | bool)
+
+    - name: Require an active K3s service when installation is not requested
+      ansible.builtin.assert:
+        that: k3s_service.stdout == 'active'
+        fail_msg: >-
+          K3s is installed but inactive. Start and enable it explicitly with
+          sudo systemctl enable --now k3s, then rerun preflight.
+      when: not (install_k3s | bool)
+

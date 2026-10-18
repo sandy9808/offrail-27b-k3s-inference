@@ -1,0 +1,86 @@
+---
+- name: Deploy containerised Offrail 27B to K3s
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Verify K3s is ready
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes
+      changed_when: false
+
+    - name: Create manifest staging directory
+      ansible.builtin.file:
+        path: "{{ offrail_manifest_dir }}"
+        state: directory
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0755"
+
+    - name: Render Offrail K3s manifests
+      ansible.builtin.template:
+        src: "../kubernetes/{{ item }}.j2"
+        dest: "{{ offrail_manifest_dir }}/{{ item }}"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
+      loop:
+        - 00-namespace.yaml
+        - 10-model-pvc.yaml
+        - 20-llama-deployment.yaml
+        - 30-service.yaml
+        - 40-nvidia-device-plugin.yaml
+
+    - name: Install NVIDIA device plugin when explicitly requested
+      ansible.builtin.command: /usr/local/bin/k3s kubectl apply -f {{ offrail_manifest_dir }}/40-nvidia-device-plugin.yaml
+      changed_when: true
+      when: deploy_nvidia_device_plugin | bool
+
+    - name: Stop legacy host llama-server before claiming host port 8899
+      ansible.builtin.command: "{{ target_home }}/models/bonsai2-27b/serve_offrail_8gb.sh --stop"
+      changed_when: true
+      when: cutover_legacy_llama | bool
+
+    - name: Block unsafe deployment while legacy llama-server owns port 8899
+      ansible.builtin.fail:
+        msg: >-
+          K3s uses hostNetwork to preserve http://127.0.0.1:8899 for Odysseus.
+          Re-run with -e cutover_legacy_llama=true after the image is pushed.
+      when: not (cutover_legacy_llama | bool)
+
+    - name: Apply namespace, storage, workload, and service manifests
+      ansible.builtin.command: /usr/local/bin/k3s kubectl apply -f {{ offrail_manifest_dir }}/{{ item }}
+      loop:
+        - 00-namespace.yaml
+        - 10-model-pvc.yaml
+        - 30-service.yaml
+        - 20-llama-deployment.yaml
+      changed_when: true
+
+    - name: Wait for Offrail deployment rollout
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n {{ offrail_namespace }}
+        rollout status deployment/{{ offrail_release_name }} --timeout=15m
+      changed_when: false
+
+    - name: Verify host-compatible Offrail health endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ offrail_port }}/health"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: offrail_health
+      retries: 30
+      delay: 2
+      until: offrail_health.status == 200
+
+    - name: Restart Odysseus after successful backend cutover
+      ansible.builtin.systemd:
+        name: odysseus-ui
+        state: restarted
+      become: true
+
+    - name: Remove legacy model directory only when explicitly requested
+      ansible.builtin.file:
+        path: "{{ target_home }}/models/bonsai2-27b"
+        state: absent
+      when: purge_legacy_model_files | bool
+

@@ -1,0 +1,11 @@
+# Build context must contain Offrail-27B-8G.gguf.
+# This image carries only the verified model; llama.cpp runs in a separate pod container.
+FROM alpine:3.20
+ARG MODEL_FILE=Offrail-27B-8G.gguf
+ARG MODEL_SHA256
+RUN apk add --no-cache coreutils
+COPY ${MODEL_FILE} /model-image/${MODEL_FILE}
+RUN test -n "${MODEL_SHA256}" && echo "${MODEL_SHA256}  /model-image/${MODEL_FILE}" | sha256sum -c -
+LABEL org.opencontainers.image.title="Offrail 27B 8G GGUF model"
+ENTRYPOINT ["/bin/sh", "-c", "sleep infinity"]
+

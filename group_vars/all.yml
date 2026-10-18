@@ -1,0 +1,47 @@
+---
+target_user: sandy007x
+target_home: "/home/{{ target_user }}"
+
+# Kubernetes deployment identity
+offrail_namespace: offrail
+offrail_release_name: offrail-27b
+offrail_kubeconfig: /etc/rancher/k3s/k3s.yaml
+offrail_manifest_dir: "{{ target_home }}/offrail-k3s/manifests"
+offrail_runtime_class: nvidia
+
+# Images. Build and push the model image before deploying.
+llama_server_image: ghcr.io/ggml-org/llama.cpp:server-cuda
+offrail_model_image: docker.io/sandy007x/offrail-27b-8g:2026.10.17
+offrail_model_file: Offrail-27B-8G.gguf
+offrail_model_sha256: be2b5ce27bd4bf6125f571e994489a325b711b092315c4b874837e4649fc04ed
+offrail_model_storage: 8Gi
+offrail_model_pull_policy: IfNotPresent
+offrail_model_cache_dir: /var/lib/rancher/k3s/storage
+
+# Retains the existing local-only integration: host Odysseus calls this endpoint.
+offrail_host: 127.0.0.1
+offrail_port: 8899
+offrail_context_size: 32768
+offrail_ubatch_size: 256
+offrail_mtp_n_max: 2
+offrail_gpu_limit: 1
+offrail_readiness_initial_delay: 30
+
+# Migration safety gates. Do not set these true until the image is pushed and
+# the preflight playbook passes.
+install_k3s: false
+deploy_nvidia_device_plugin: false
+cutover_legacy_llama: false
+purge_legacy_model_files: false
+
+# Live TLS reverse proxy. The generated certificate is self-signed and therefore
+# must be trusted manually by client devices.
+tls_enabled: true
+tls_hostname: odysseus.offrail.test
+tls_model_hostname: offrail-api.offrail.test
+tls_lan_ip: 192.168.1.148
+tls_certificate_dir: /etc/offrail/tls
+tls_certificate_file: "{{ tls_certificate_dir }}/offrail.crt"
+tls_private_key_file: "{{ tls_certificate_dir }}/offrail.key"
+tls_valid_days: 825
+

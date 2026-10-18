@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ offrail_release_name }}
+  namespace: {{ offrail_namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ offrail_release_name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ offrail_release_name }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+{% if offrail_runtime_class | length > 0 %}
+      runtimeClassName: {{ offrail_runtime_class }}
+{% endif %}
+      initContainers:
+        - name: stage-model
+          image: {{ offrail_model_image }}
+          imagePullPolicy: {{ offrail_model_pull_policy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              target="/models/{{ offrail_model_file }}"
+              cp "/model-image/{{ offrail_model_file }}" "$target"
+              echo "{{ offrail_model_sha256 }}  $target" | sha256sum -c -
+          volumeMounts:
+            - name: model
+              mountPath: /models
+      containers:
+        - name: llama-server
+          image: {{ llama_server_image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --host
+            - {{ offrail_host | quote }}
+            - --port
+            - {{ offrail_port | string | quote }}
+            - -m
+            - /models/{{ offrail_model_file }}
+            - -ngl
+            - "99"
+            - -fa
+            - "on"
+            - -c
+            - {{ offrail_context_size | string | quote }}
+            - -ub
+            - {{ offrail_ubatch_size | string | quote }}
+            - -np
+            - "1"
+            - -ctk
+            - q4_0
+            - -ctv
+            - q4_0
+            - --jinja
+            - --reasoning-effort
+            - medium
+            - --spec-type
+            - draft-mtp
+            - --spec-draft-n-max
+            - {{ offrail_mtp_n_max | string | quote }}
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,utility
+            - name: GGML_CUDA_BATCH_INVARIANT
+              value: "1"
+          ports:
+            - name: http
+              containerPort: {{ offrail_port }}
+          resources:
+            limits:
+              nvidia.com/gpu: "{{ offrail_gpu_limit }}"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ offrail_readiness_initial_delay }}
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: model
+              mountPath: /models
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: {{ offrail_release_name }}-model
+

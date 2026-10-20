@@ -43,35 +43,33 @@ spec:
             - --port
             - {{ offrail_port | string | quote }}
             - -m
-            - /models/{{ offrail_model_file }}
+            - {{ ("/models/" ~ offrail_model_file) | quote }}
             - -ngl
             - "99"
             - -fa
             - "on"
             - -c
             - {{ offrail_context_size | string | quote }}
-            - -ub
-            - {{ offrail_ubatch_size | string | quote }}
             - -np
             - "1"
+            - --temp
+            - "1.0"
+            - --top-p
+            - "0.95"
+            - --top-k
+            - "20"
             - -ctk
-            - q4_0
+            - "q4_0"
             - -ctv
-            - q4_0
+            - "q4_0"
             - --jinja
             - --reasoning-effort
-            - medium
-            - --spec-type
-            - draft-mtp
-            - --spec-draft-n-max
-            - {{ offrail_mtp_n_max | string | quote }}
+            - "medium"
           env:
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: compute,utility
-            - name: GGML_CUDA_BATCH_INVARIANT
-              value: "1"
           ports:
             - name: http
               containerPort: {{ offrail_port }}
@@ -79,15 +77,15 @@ spec:
             limits:
               nvidia.com/gpu: "{{ offrail_gpu_limit }}"
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
+              host: 127.0.0.1
               port: http
             initialDelaySeconds: {{ offrail_readiness_initial_delay }}
             periodSeconds: 10
             failureThreshold: 30
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
+              host: 127.0.0.1
               port: http
             initialDelaySeconds: 60
             periodSeconds: 20

@@ -36,8 +36,7 @@ Run the following from the project root to make the Nginx, hosts-file, and
 certificate state converge:
 
     ansible-playbook playbooks/configure_https.yml \
-      -e ansible_password='YOUR_SSH_PASSWORD' \
-      -e ansible_become_password='YOUR_SUDO_PASSWORD'
+      --ask-pass --ask-become-pass
 
 The certificate uses DNS SANs for both names and an IP SAN for 192.168.1.148.
 It has a validity period configured by tls_valid_days in group_vars/all.yml.

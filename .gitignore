@@ -1,6 +1,7 @@
 # Large model artifacts and generated credentials must never enter source control.
 docker/*.gguf
 docker/*.tar.gz
+docker/runtime/
 *.pem
 *.key
 *.crt

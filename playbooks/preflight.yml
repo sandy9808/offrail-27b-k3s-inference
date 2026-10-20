@@ -31,14 +31,14 @@
     - name: Verify K3s binary exists when installation is not requested
       ansible.builtin.command: /usr/local/bin/k3s --version
       changed_when: false
-      when: not (install_k3s | bool)
+      when: not (install_k3s | bool or start_k3s | bool)
 
     - name: Check K3s service state when installation is not requested
       ansible.builtin.command: systemctl is-active k3s
       register: k3s_service
       changed_when: false
       failed_when: false
-      when: not (install_k3s | bool)
+      when: not (install_k3s | bool or start_k3s | bool)
 
     - name: Require an active K3s service when installation is not requested
       ansible.builtin.assert:
@@ -46,5 +46,5 @@
         fail_msg: >-
           K3s is installed but inactive. Start and enable it explicitly with
           sudo systemctl enable --now k3s, then rerun preflight.
-      when: not (install_k3s | bool)
+      when: not (install_k3s | bool or start_k3s | bool)
 

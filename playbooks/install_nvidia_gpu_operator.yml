@@ -1,0 +1,149 @@
+---
+- name: Install NVIDIA GPU Operator configured for K3s
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Require a working host NVIDIA driver before changing GPU integration
+      ansible.builtin.command: nvidia-smi
+      changed_when: false
+
+    - name: Require K3s API readiness
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes
+      changed_when: false
+      become: true
+
+    - name: Require Helm on target
+      ansible.builtin.command: helm version --short
+      changed_when: false
+      become: true
+
+    - name: Add or update NVIDIA Helm repository
+      ansible.builtin.command:
+        argv:
+          - helm
+          - repo
+          - add
+          - nvidia
+          - https://helm.ngc.nvidia.com/nvidia
+          - --force-update
+      changed_when: true
+      become: true
+
+    - name: Refresh NVIDIA Helm chart index
+      ansible.builtin.command: helm repo update nvidia
+      changed_when: true
+      become: true
+
+    - name: Ensure privileged GPU Operator namespace exists
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl create namespace {{ nvidia_gpu_operator_namespace }}
+        --dry-run=client -o yaml |
+        /usr/local/bin/k3s kubectl apply -f -
+      register: operator_namespace
+      changed_when: "'created' in operator_namespace.stdout or 'configured' in operator_namespace.stdout"
+      become: true
+
+    - name: Label GPU Operator namespace privileged for Pod Security Admission
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - label
+          - namespace
+          - "{{ nvidia_gpu_operator_namespace }}"
+          - pod-security.kubernetes.io/enforce=privileged
+          - --overwrite
+      register: operator_namespace_label
+      changed_when: "'labeled' in operator_namespace_label.stdout"
+      become: true
+
+    - name: Remove the obsolete project device-plugin DaemonSet, if present
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - -n
+          - kube-system
+          - delete
+          - daemonset
+          - nvidia-device-plugin-daemonset
+          - --ignore-not-found=true
+      register: legacy_plugin_delete
+      changed_when: "'deleted' in legacy_plugin_delete.stdout"
+      become: true
+
+    - name: Install or reconcile the NVIDIA GPU Operator for K3s containerd
+      ansible.builtin.command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - "{{ nvidia_gpu_operator_release }}"
+          - nvidia/gpu-operator
+          - --version={{ nvidia_gpu_operator_version }}
+          - --namespace
+          - "{{ nvidia_gpu_operator_namespace }}"
+          - --create-namespace
+          - --wait
+          - --timeout
+          - 15m
+          - --set
+          - driver.enabled=false
+          - --set-string
+          - toolkit.env[0].name=CONTAINERD_CONFIG
+          - --set-string
+          - toolkit.env[0].value=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+          - --set-string
+          - toolkit.env[1].name=CONTAINERD_SOCKET
+          - --set-string
+          - toolkit.env[1].value=/run/k3s/containerd/containerd.sock
+          - --set-string
+          - toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS
+          - --set-string
+          - toolkit.env[2].value=nvidia
+          - --set-string
+          - toolkit.env[3].name=CONTAINERD_SET_AS_DEFAULT
+          - --set-string
+          - toolkit.env[3].value=false
+      register: operator_install
+      changed_when: true
+      become: true
+      environment:
+        KUBECONFIG: "{{ offrail_kubeconfig }}"
+
+    - name: Wait for NVIDIA ClusterPolicy to become ready
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - get
+          - clusterpolicy
+          - cluster-policy
+          - -o
+          - jsonpath={.status.state}
+      register: cluster_policy_state
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: cluster_policy_state.stdout | lower == 'ready'
+      become: true
+
+    - name: Require K3s to advertise an allocatable GPU
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get nodes -o json |
+        python3 -c 'import json,sys; d=json.load(sys.stdin); g=[n.get("status",{}).get("allocatable",{}).get("nvidia.com/gpu","0") for n in d.get("items",[])]; print("allocatable nvidia.com/gpu:", ",".join(g)); sys.exit(0 if any(int(x)>0 for x in g) else 1)'
+      changed_when: false
+      become: true
+
+    - name: Show GPU Operator pods and GPU resource registration
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get pods -n {{ nvidia_gpu_operator_namespace }} -o wide;
+        /usr/local/bin/k3s kubectl get nodes -o json |
+        python3 -c 'import json,sys; d=json.load(sys.stdin); [print(n["metadata"]["name"],"capacity=",n.get("status",{}).get("capacity",{}).get("nvidia.com/gpu","0"),"allocatable=",n.get("status",{}).get("allocatable",{}).get("nvidia.com/gpu","0")) for n in d.get("items",[])]'
+      register: operator_status
+      changed_when: false
+      become: true
+
+    - name: Report GPU Operator status
+      ansible.builtin.debug:
+        var: operator_status.stdout_lines

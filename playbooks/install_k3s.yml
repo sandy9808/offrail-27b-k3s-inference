@@ -10,12 +10,41 @@
       become: true
       when: install_k3s | bool
 
-    - name: Wait for K3s API after installation
+    - name: Enable and start existing K3s server when explicitly requested
+      ansible.builtin.systemd:
+        name: k3s
+        enabled: true
+        state: started
+      become: true
+      when: start_k3s | bool
+
+    - name: Inspect K3s service state
+      ansible.builtin.command: systemctl is-active k3s
+      register: k3s_service_state
+      changed_when: false
+      failed_when: false
+
+    - name: Show recent K3s service logs when inactive
+      ansible.builtin.command: journalctl -u k3s -n 100 --no-pager
+      register: k3s_journal
+      changed_when: false
+      become: true
+      when: k3s_service_state.stdout != 'active'
+
+    - name: Fail with service diagnostics when K3s did not start
+      ansible.builtin.fail:
+        msg: >-
+          K3s service is {{ k3s_service_state.stdout | default('unknown') }}.
+          Recent journal output: {{ k3s_journal.stdout | default('unavailable') }}
+      when: k3s_service_state.stdout != 'active'
+
+    - name: Wait for K3s API after install or start request
       ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes
       register: k3s_nodes_out
-      retries: 30
+      retries: 60
       delay: 2
       until: k3s_nodes_out.rc == 0
       changed_when: false
-      when: install_k3s | bool
+      become: true
+      when: install_k3s | bool or start_k3s | bool
 

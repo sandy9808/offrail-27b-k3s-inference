@@ -1,0 +1,148 @@
+---
+- name: Preview or remove the legacy host Offrail model installation
+  hosts: k3s_nodes
+  gather_facts: false
+  vars:
+    cleanup_paths: "{{ offrail_host_legacy_dirs }}"
+  tasks:
+    - name: Verify the K3s Offrail deployment is healthy before removing fallback
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_host_model | bool
+        - cleanup_remove_k3s_model | bool
+      block:
+        - name: Check K3s model health endpoint on target host
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ offrail_port }}/health"
+            status_code: 200
+            return_content: true
+          register: k3s_model_health
+          retries: 12
+          delay: 5
+          until: k3s_model_health.status == 200
+
+        - name: Confirm K3s deployment has a ready replica
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl -n {{ offrail_namespace }}
+            get deployment/{{ offrail_release_name }}
+            -o jsonpath={.status.readyReplicas}
+          register: deployment_ready
+          changed_when: false
+          failed_when: deployment_ready.stdout | int < 1
+          become: true
+
+    - name: Refuse unsafe full cleanup while the K3s model is unhealthy
+      ansible.builtin.assert:
+        that:
+          - k3s_model_health.status == 200
+          - deployment_ready.stdout | int >= 1
+        fail_msg: K3s model must be healthy before removing the legacy rollback copy.
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_host_model | bool
+        - cleanup_remove_k3s_model | bool
+
+    - name: Stop legacy host llama-server
+      ansible.builtin.command: "{{ offrail_host_model_dir }}/serve_offrail_8gb.sh --stop"
+      register: legacy_stop
+      changed_when: "'Stopping llama-server' in legacy_stop.stdout"
+      failed_when: false
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_host_model | bool
+
+    - name: Preview legacy host Offrail paths to be removed
+      ansible.builtin.debug:
+        msg: >-
+          Would remove {{ item }} (preview only). Set cleanup_confirm=true and
+          cleanup_remove_host_model=true to delete host model files.
+      loop: "{{ cleanup_paths }}"
+      when: not (cleanup_confirm | bool) and (cleanup_remove_host_model | bool)
+
+    - name: Remove legacy host Offrail files after confirmation
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ cleanup_paths }}"
+      become: true
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_host_model | bool
+
+- name: Optionally remove K3s model storage and deployment
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Preview K3s resources that would be removed
+      ansible.builtin.debug:
+        msg:
+          - "Would delete deployment {{ offrail_release_name }} in {{ offrail_namespace }}"
+          - "Would delete PVC {{ offrail_release_name }}-model in {{ offrail_namespace }}"
+      when:
+        - not (cleanup_confirm | bool)
+        - cleanup_remove_k3s_model | bool
+
+    - name: Preview cached model image removal
+      ansible.builtin.debug:
+        msg: "Would remove {{ offrail_model_image }} from the K3s containerd image cache"
+      when:
+        - not (cleanup_confirm | bool)
+        - cleanup_remove_model_image | bool
+
+    - name: Remove K3s deployment and service after confirmation
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - -n
+          - "{{ offrail_namespace }}"
+          - delete
+          - deployment,service
+          - "{{ offrail_release_name }}"
+          - "--ignore-not-found=true"
+      changed_when: true
+      become: true
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_k3s_model | bool
+
+    - name: Remove K3s model PVC after confirmation
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - -n
+          - "{{ offrail_namespace }}"
+          - delete
+          - pvc
+          - "{{ offrail_release_name }}-model"
+          - "--ignore-not-found=true"
+      changed_when: true
+      become: true
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_k3s_model | bool
+
+    - name: Remove model image from local K3s containerd cache when requested
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - ctr
+          - images
+          - rm
+          - "{{ offrail_model_image }}"
+      become: true
+      register: image_remove
+      changed_when: image_remove.rc == 0
+      failed_when: false
+      when:
+        - cleanup_confirm | bool
+        - cleanup_remove_model_image | bool
+
+    - name: Report cleanup completed
+      ansible.builtin.debug:
+        msg: >-
+          Cleanup actions have finished. The namespace, PVC data, and selected
+          host paths may be permanently deleted. The NVIDIA device plugin and
+          K3s installation were intentionally preserved.
+      when: cleanup_confirm | bool

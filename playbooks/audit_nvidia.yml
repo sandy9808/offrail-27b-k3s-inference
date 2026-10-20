@@ -1,0 +1,227 @@
+---
+- name: Audit host NVIDIA and K3s GPU support
+  hosts: k3s_nodes
+  gather_facts: false
+  tasks:
+    - name: Read complete host GPU report
+      ansible.builtin.command: nvidia-smi
+      register: host_nvidia_smi
+      changed_when: false
+      failed_when: false
+
+    - name: Read GPU identity, compute capability, VRAM, and driver
+      ansible.builtin.command:
+        argv:
+          - nvidia-smi
+          - --query-gpu=name,compute_cap,memory.total,memory.free,driver_version
+          - --format=csv,noheader
+      register: gpu_summary
+      changed_when: false
+      failed_when: false
+
+    - name: Check NVIDIA Container Toolkit CLI
+      ansible.builtin.command: nvidia-ctk --version
+      register: nvidia_ctk
+      changed_when: false
+      failed_when: false
+
+    - name: Check NVIDIA container runtime CLI can see driver devices
+      ansible.builtin.command: nvidia-container-cli info
+      register: container_cli
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Check K3s service state
+      ansible.builtin.command: systemctl is-active k3s
+      register: k3s_state
+      changed_when: false
+      failed_when: false
+
+    - name: Capture Kubernetes node GPU capacity and labels
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - kubectl
+          - get
+          - nodes
+          - -o
+          - wide
+      register: node_status
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture advertised NVIDIA GPU resources
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get nodes -o json |
+        python3 -c 'import json,sys; d=json.load(sys.stdin); [print(n["metadata"]["name"],"capacity=",n.get("status",{}).get("capacity",{}).get("nvidia.com/gpu","0"),"allocatable=",n.get("status",{}).get("allocatable",{}).get("nvidia.com/gpu","0"),"gpu_labels=",{k:v for k,v in n["metadata"].get("labels",{}).items() if k.startswith("nvidia.com/") or k.startswith("feature.node.kubernetes.io/pci-")}) for n in d.get("items",[])]'
+      register: gpu_capacity
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture NVIDIA RuntimeClass
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get runtimeclass -o wide
+      register: runtime_classes
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture GPU Operator resources
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get pods -A -o wide |
+        grep -Ei 'nvidia|gpu-operator|feature-discovery' || true
+      register: operator_pods
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture GPU Operator policy state
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get clusterpolicy
+      register: cluster_policy
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture K3s containerd runtime configuration
+      ansible.builtin.shell: >-
+        grep -nEi 'nvidia|containerd.runtimes' \
+        /var/lib/rancher/k3s/agent/etc/containerd/config.toml \
+        /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl 2>/dev/null || true
+      register: containerd_gpu_config
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture GPU Operator Helm release state
+      ansible.builtin.command: helm list --all-namespaces
+      register: helm_releases
+      changed_when: false
+      failed_when: false
+      become: true
+      environment:
+        KUBECONFIG: "{{ offrail_kubeconfig }}"
+
+    - name: Capture Offrail deployment and pod state
+      ansible.builtin.command: /usr/local/bin/k3s kubectl -n {{ offrail_namespace }} get deployment,pods -o wide
+      register: offrail_state
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Capture model endpoint health on the target host
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ offrail_port }}/health"
+        status_code: 200
+        return_content: true
+      register: model_health
+      failed_when: false
+
+    - name: Report NVIDIA and K3s GPU audit
+      ansible.builtin.debug:
+        msg:
+          - "HOST nvidia-smi rc={{ host_nvidia_smi.rc }}: {{ host_nvidia_smi.stdout | default(host_nvidia_smi.stderr, true) }}"
+          - "GPU summary rc={{ gpu_summary.rc }}: {{ gpu_summary.stdout | default(gpu_summary.stderr, true) }}"
+          - "nvidia-ctk rc={{ nvidia_ctk.rc }}: {{ nvidia_ctk.stdout | default(nvidia_ctk.stderr, true) }}"
+          - "nvidia-container-cli rc={{ container_cli.rc }}: {{ container_cli.stdout | default(container_cli.stderr, true) }}"
+          - "K3s service={{ k3s_state.stdout | default(k3s_state.stderr, true) }}"
+          - "Kubernetes nodes: {{ node_status.stdout | default(node_status.stderr, true) }}"
+          - "GPU capacity and labels: {{ gpu_capacity.stdout | default(gpu_capacity.stderr, true) }}"
+          - "RuntimeClasses: {{ runtime_classes.stdout | default(runtime_classes.stderr, true) }}"
+          - "NVIDIA/GPU pods: {{ operator_pods.stdout | default(operator_pods.stderr, true) }}"
+          - "ClusterPolicy: {{ cluster_policy.stdout | default(cluster_policy.stderr, true) }}"
+          - "K3s containerd NVIDIA config: {{ containerd_gpu_config.stdout | default(containerd_gpu_config.stderr, true) }}"
+          - "Helm releases: {{ helm_releases.stdout | default(helm_releases.stderr, true) }}"
+          - "Offrail K3s state: {{ offrail_state.stdout | default(offrail_state.stderr, true) }}"
+          - "Model health HTTP status={{ model_health.status | default('unavailable') }} body={{ model_health.content | default(model_health.msg, true) }}"
+
+    - name: Run real CUDA vector-add smoke test when enabled
+      when: nvidia_gpu_smoke_test | bool
+      block:
+        - name: Stage official NVIDIA vector-add smoke-test pod manifest
+          ansible.builtin.template:
+            src: ../kubernetes/nvidia-vectoradd-smoke.yaml.j2
+            dest: /tmp/nvidia-vectoradd-smoke.yaml
+            mode: "0600"
+          become: true
+
+        - name: Create GPU smoke-test pod
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - kubectl
+              - apply
+              - -f
+              - /tmp/nvidia-vectoradd-smoke.yaml
+          register: smoke_apply
+          changed_when: true
+          become: true
+
+        - name: Wait for CUDA vector-add pod to succeed
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - kubectl
+              - wait
+              - --for=jsonpath={.status.phase}=Succeeded
+              - pod/nvidia-vectoradd-smoke
+              - --timeout=180s
+          register: smoke_wait
+          changed_when: false
+          become: true
+
+        - name: Show CUDA vector-add result
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - kubectl
+              - logs
+              - pod/nvidia-vectoradd-smoke
+          register: smoke_logs
+          changed_when: false
+          become: true
+
+        - name: Require CUDA smoke test to pass
+          ansible.builtin.assert:
+            that: "'Test PASSED' in smoke_logs.stdout"
+            fail_msg: "CUDA vector-add did not pass. Pod logs: {{ smoke_logs.stdout | default('unavailable') }}"
+
+      rescue:
+        - name: Collect failed CUDA smoke-test diagnostics
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - kubectl
+              - describe
+              - pod/nvidia-vectoradd-smoke
+          register: smoke_diagnostics
+          changed_when: false
+          failed_when: false
+          become: true
+
+        - name: Report CUDA smoke-test failure
+          ansible.builtin.fail:
+            msg: >-
+              NVIDIA GPU smoke test failed. {{ smoke_diagnostics.stdout
+              | default(smoke_diagnostics.stderr, true) }}
+
+      always:
+        - name: Remove temporary CUDA smoke-test pod and manifest
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - kubectl
+              - delete
+              - -f
+              - /tmp/nvidia-vectoradd-smoke.yaml
+              - --ignore-not-found=true
+          changed_when: true
+          failed_when: false
+          become: true
+
+        - name: Remove temporary CUDA smoke-test manifest
+          ansible.builtin.file:
+            path: /tmp/nvidia-vectoradd-smoke.yaml
+            state: absent
+          become: true

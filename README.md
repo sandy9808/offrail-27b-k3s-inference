@@ -53,6 +53,130 @@ To publish a deliberately updated model, set `EXPECTED_MODEL_SHA256`, `MODEL_FIL
 
 ## Deploy
 
+### Ordered command sequence for the target host
+
+Run these from the Ansible controller after setting `inventory.ini` to the target's current SSH user and IP. All SSH and sudo passwords are entered interactively; do not put them in shell history.
+
+The companion Odysseus project is [odysseus-dev/odysseus](https://github.com/odysseus-dev/odysseus), deployed separately by the adjacent `offrail-27b-ansible` project under `/home/sandy007x/odysseus` on `192.168.1.148`. This repository owns the Offrail model endpoint; the Odysseus app owns application tools and must be configured to call `http://127.0.0.1:8899/v1`.
+
+Before making changes, preview cleanup only (this does not delete anything):
+
+```bash
+ansible-playbook playbooks/cleanup_host_offrail.yml --ask-pass --ask-become-pass
+```
+
+Do not run confirmed full cleanup when the goal is to keep Offrail deployed. If you intentionally need a fresh model install and accept deleting its host rollback files and K3s PVC, first preserve anything needed, then run the confirmed cleanup and continue with the audit/install steps:
+
+```bash
+ansible-playbook playbooks/cleanup_host_offrail.yml \\
+  -e cleanup_confirm=true \\
+  -e cleanup_remove_host_model=true \\
+  -e cleanup_remove_k3s_model=true \\
+  -e cleanup_remove_model_image=true \\
+  --ask-pass --ask-become-pass
+```
+
+1. Inspect host NVIDIA, K3s, Operator, and existing deployment state. This also runs and removes a real CUDA vector-add pod:
+
+   ```bash
+   ansible-playbook playbooks/audit_nvidia.yml --ask-pass --ask-become-pass
+   ```
+
+   Continue only if host `nvidia-smi` succeeds and K3s is active. If K3s is stopped, start it with `playbooks/install_k3s.yml` as shown below, then rerun the audit. If host `nvidia-smi` fails, repair the Pop!_OS NVIDIA driver first; installing the Kubernetes Operator cannot fix a broken host driver.
+
+2. Install K3s only if it is not already installed; otherwise start it only if it is stopped:
+
+   ```bash
+   # Only for a host without K3s:
+   ansible-playbook playbooks/install_k3s.yml -e install_k3s=true --ask-pass --ask-become-pass
+
+   # For an installed but stopped K3s service:
+   ansible-playbook playbooks/install_k3s.yml -e start_k3s=true --ask-pass --ask-become-pass
+   ```
+
+3. Install/reconcile the NVIDIA GPU Operator (requires host driver and Helm), then rerun the audit so the CUDA vector-add test proves container GPU access:
+
+   ```bash
+   ansible-playbook playbooks/install_nvidia_gpu_operator.yml --ask-pass --ask-become-pass
+   ansible-playbook playbooks/audit_nvidia.yml --ask-pass --ask-become-pass
+   ```
+
+4. Build and push both images from this controller after placing the exact model file at `docker/Offrail-27B-8G.gguf` and logging in to Docker Hub interactively:
+
+   ```bash
+   docker login -u sandy007x
+   ./docker/build-and-push.sh
+   ./docker/build-server-image.sh
+   ```
+
+5. Cut over the backend only after both image pushes and the second GPU audit succeed:
+
+   ```bash
+   ansible-playbook playbooks/deploy_offrail.yml \\
+     -e cutover_legacy_llama=true \\
+     --ask-pass --ask-become-pass
+   ```
+
+6. Confirm both the workload and OpenAI-compatible API on Pop!_OS (SSH from the controller):
+
+   ```bash
+   ssh sandy007x@192.168.1.148
+   sudo k3s kubectl -n offrail rollout status deployment/offrail-27b --timeout=15m
+   sudo k3s kubectl -n offrail get pods,pvc -o wide
+   sudo k3s kubectl -n offrail logs deployment/offrail-27b -c llama-server --tail=100
+   curl -fsS http://127.0.0.1:8899/health
+   curl -fsS http://127.0.0.1:8899/v1/models
+   ```
+
+   The host Odysseus service should use base URL `http://127.0.0.1:8899/v1` and the model ID returned by `/v1/models`. Restart it only after Offrail health succeeds; the Ansible deploy playbook does this.
+
+7. Test a normal chat completion and an OpenAI-compatible tool call from Pop!_OS. Tool calls are returned for the **client application** to execute; the model server does not execute tools itself. Odysseus must expose/register the `odysseus` and `models` tools and execute the returned calls under its own permissions policy.
+
+   ```bash
+   MODEL_ID="$(curl -fsS http://127.0.0.1:8899/v1/models | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')"
+   curl -fsS http://127.0.0.1:8899/v1/chat/completions \\
+     -H 'Content-Type: application/json' \\
+     -d "$(MODEL_ID="$MODEL_ID" python3 -c 'import json,os; print(json.dumps({"model":os.environ["MODEL_ID"],"messages":[{"role":"user","content":"Reply with exactly: Offrail is online."}],"max_tokens":64,"stream":False}))')"
+
+   curl -fsS http://127.0.0.1:8899/v1/chat/completions \\
+     -H 'Content-Type: application/json' \\
+     -d "$(MODEL_ID="$MODEL_ID" python3 -c 'import json,os; print(json.dumps({"model":os.environ["MODEL_ID"],"messages":[{"role":"user","content":"Use the odysseus tool to check service status, then use the models tool to list available models."}],"tools":[{"type":"function","function":{"name":"odysseus","description":"Query Odysseus service status","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["status"]}},"required":["action"]}}},{"type":"function","function":{"name":"models","description":"List models available to Odysseus","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["list"]}},"required":["action"]}}}],"tool_choice":"auto","stream":False,"max_tokens":256}))')"
+   ```
+
+   A tool-call test passes at the model API layer when the response contains `choices[0].message.tool_calls` with `odysseus`/`models` and JSON arguments. End-to-end tool execution must be validated inside Odysseus, because only that application has the tool implementations. The body does not grant the model shell access.
+
+The names above are example OpenAI-compatible function names for the client integration. They do not prove that Odysseus currently registers tools under those exact identifiers; match the function names and JSON schemas to the tools actually registered by Odysseus. For app-side deployment and its own integration checks, use the companion repository's documented playbook from its checkout:
+
+```bash
+cd /Users/sandeep383.kumar/Desktop/Misc/offrail-27b-ansible
+ansible-playbook playbooks/serve_odysseus.yml --ask-pass --ask-become-pass
+```
+
+### One-shot K3s manifests
+
+The checked-in [one-shot deployment manifest](kubernetes/offrail-one-shot.yaml) contains the namespace, model PVC, and Offrail Deployment. It assumes K3s, the healthy NVIDIA GPU Operator, and both pushed images are already present. The deployment claims host loopback port 8899, so stop any existing host llama-server before applying it. To use the one-shot path instead of Ansible deploy:
+
+```bash
+ssh sandy007x@192.168.1.148
+# Stop the existing host server using its own service/script, if running.
+sudo k3s kubectl apply -f offrail-one-shot.yaml
+sudo k3s kubectl -n offrail rollout status deployment/offrail-27b --timeout=15m
+curl -fsS http://127.0.0.1:8899/health
+```
+
+Copy `kubernetes/offrail-one-shot.yaml` to the target first (for example with `scp`). The manifest uses the same image tags, model checksum, GPU request, 64K context, and 8899 loopback endpoint as the Ansible templates.
+
+Run the standalone GPU smoke test after Operator installation with:
+
+```bash
+sudo k3s kubectl apply -f nvidia-vectoradd-one-shot.yaml
+sudo k3s kubectl wait --for=jsonpath='{.status.phase}=Succeeded' pod/nvidia-vectoradd-smoke --timeout=180s
+sudo k3s kubectl logs pod/nvidia-vectoradd-smoke
+sudo k3s kubectl delete -f nvidia-vectoradd-one-shot.yaml
+```
+
+Copy the file from `kubernetes/nvidia-vectoradd-one-shot.yaml` to the target first. The expected log includes `Test PASSED`.
+
 First ensure the image is published and K3s GPU scheduling works. If K3s is installed but stopped, start it explicitly:
 
 ```bash

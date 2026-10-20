@@ -1,0 +1,115 @@
+# One-shot rendered equivalent of the Ansible deployment templates.
+# Apply on the K3s host with: sudo k3s kubectl apply -f offrail-one-shot.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: offrail
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: offrail-27b-model
+  namespace: offrail
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: offrail-27b
+  namespace: offrail
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: offrail-27b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: offrail-27b
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      runtimeClassName: nvidia
+      initContainers:
+        - name: stage-model
+          image: docker.io/sandy007x/offrail-27b-8g:2026.10.17
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - >-
+              target="/models/Offrail-27B-8G.gguf";
+              cp "/model-image/Offrail-27B-8G.gguf" "$target";
+              echo "be2b5ce27bd4bf6125f571e994489a325b711b092315c4b874837e4649fc04ed  $target" | sha256sum -c -
+          volumeMounts:
+            - name: model
+              mountPath: /models
+      containers:
+        - name: llama-server
+          image: docker.io/sandy007x/offrail-llama-server:2026.10.20
+          imagePullPolicy: IfNotPresent
+          args:
+            - --host
+            - 127.0.0.1
+            - --port
+            - "8899"
+            - -m
+            - /models/Offrail-27B-8G.gguf
+            - -ngl
+            - "99"
+            - -fa
+            - "on"
+            - -c
+            - "65536"
+            - -np
+            - "1"
+            - --temp
+            - "1.0"
+            - --top-p
+            - "0.95"
+            - --top-k
+            - "20"
+            - -ctk
+            - q4_0
+            - -ctv
+            - q4_0
+            - --jinja
+            - --reasoning-effort
+            - medium
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,utility
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          ports:
+            - name: http
+              containerPort: 8899
+          readinessProbe:
+            tcpSocket:
+              host: 127.0.0.1
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              host: 127.0.0.1
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: model
+              mountPath: /models
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: offrail-27b-model

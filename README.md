@@ -2,12 +2,22 @@
 
 This is a separate deployment project for running the Offrail GGUF model in K3s. It preserves the existing Odysseus URL (`http://127.0.0.1:8899`) by using host networking. The old host process is stopped only when the operator explicitly enables `cutover_legacy_llama`.
 
+The complete command sequence, live verification results, and recovery steps
+are in the [deployment and verification runbook](docs/DEPLOYMENT_AND_VERIFICATION.md).
+Verified hardware and software details are in [system specifications](docs/SYSTEM_SPECS.md).
+
 ## Architecture
 
 - Model image: `docker.io/sandy007x/offrail-27b-8g:2026.10.17`, containing the GGUF and a small shell runtime used to stage the model.
 - Inference image: `docker.io/sandy007x/offrail-llama-server:2026.10.20`, built from the upstream CUDA 12.4 sm86/sm89 Bonsai runtime bundle required by this PTQ1_0 model.
 - K3s deployment: one replica, one NVIDIA GPU, model on a PVC, `hostNetwork: true`.
 - Host endpoint: `http://127.0.0.1:8899` (host-local; the model binds to loopback).
+
+The last recorded target check found Pop!_OS 22.04, K3s `v1.34.3+k3s1`,
+containerd `2.1.5-k3s1`, and an NVIDIA GeForce RTX 4060 Laptop GPU with 8,188
+MiB VRAM. Images are built for `linux/amd64`. See the [system specification
+record](docs/SYSTEM_SPECS.md) for driver, CUDA, Operator, model checksum, and
+commands to collect CPU, RAM, and disk details from the target.
 
 The deployment uses `hostNetwork` because Odysseus runs on the target host and requires loopback access. The default server bind address is `127.0.0.1`, keeping port 8899 local to the target host. The upstream `serve/8gb.sh` uses port `8899`, `-c 65536`, full GPU offload, flash attention, and q4_0 K/V cache; this project mirrors those model arguments. Its upstream comment says the 8 GB row is pending measurement, so verify free VRAM on this host before relying on 64K context, especially if the GPU also drives a display.
 
@@ -16,7 +26,7 @@ The deployment uses `hostNetwork` because Odysseus runs on the target host and r
 - Ansible on the controller and SSH access to `sandy007x@192.168.1.148`.
 - NVIDIA driver and a K3s-compatible NVIDIA container runtime on the target. The `nvidia` RuntimeClass must exist if `offrail_runtime_class` is non-empty.
 - K3s already installed, or install it using the explicit option below.
-- Docker on the controller and Docker Hub credentials for `sandy007x` to build and publish the model image.
+- Docker on the machine building the images (controller for a registry push, or target for local K3s import). Docker Hub credentials are needed only when pushing; the target-local build path avoids a registry push.
 - Approximately 8 GiB for the model PVC plus image-layer storage; sufficient free GPU VRAM for the 27B quantization, context, and runtime overhead.
 
 The preflight checks SSH, NVIDIA visibility, and Docker on the controller. Run the full GPU audit before cutover:
@@ -68,11 +78,11 @@ ansible-playbook playbooks/cleanup_host_offrail.yml --ask-pass --ask-become-pass
 Do not run confirmed full cleanup when the goal is to keep Offrail deployed. If you intentionally need a fresh model install and accept deleting its host rollback files and K3s PVC, first preserve anything needed, then run the confirmed cleanup and continue with the audit/install steps:
 
 ```bash
-ansible-playbook playbooks/cleanup_host_offrail.yml \\
-  -e cleanup_confirm=true \\
-  -e cleanup_remove_host_model=true \\
-  -e cleanup_remove_k3s_model=true \\
-  -e cleanup_remove_model_image=true \\
+ansible-playbook playbooks/cleanup_host_offrail.yml \
+  -e cleanup_confirm=true \
+  -e cleanup_remove_host_model=true \
+  -e cleanup_remove_k3s_model=true \
+  -e cleanup_remove_model_image=true \
   --ask-pass --ask-become-pass
 ```
 
@@ -94,20 +104,31 @@ ansible-playbook playbooks/cleanup_host_offrail.yml \\
    ansible-playbook playbooks/install_k3s.yml -e start_k3s=true --ask-pass --ask-become-pass
    ```
 
-3. Install/reconcile the NVIDIA GPU Operator (requires host driver and Helm), then rerun the audit so the CUDA vector-add test proves container GPU access:
+3. Install/reconcile the NVIDIA GPU Operator (requires host driver and Helm), then run the CUDA vector-add audit while the GPU is free:
 
    ```bash
    ansible-playbook playbooks/install_nvidia_gpu_operator.yml --ask-pass --ask-become-pass
    ansible-playbook playbooks/audit_nvidia.yml --ask-pass --ask-become-pass
    ```
 
+   The vector-add pod cannot schedule while Offrail reserves the only GPU.
+   While Offrail is serving, use:
+
+   ```bash
+   ansible-playbook playbooks/audit_nvidia.yml \
+     -e nvidia_gpu_smoke_test=false \
+     --ask-pass --ask-become-pass
+   ```
+
+   Then verify inference and the llama-server process with the checks below.
+
 4. Build both images directly on the Pop!_OS target and import them into K3s containerd. This uses the verified existing model at `/home/sandy007x/models/bonsai2-27b/Offrail-27B-8G.gguf` and avoids Docker Hub login or copying the multi-gigabyte model over the network. Both image build scripts explicitly target `linux/amd64`; the NVIDIA runtime bundle itself is x86-64 and targets CUDA compute capabilities sm86/sm89. Copy the build files to the target, then run the helper there:
 
    ```bash
-   mkdir -p ~/offrail-image-build/docker
-   # From this repository checkout on the controller:
-   scp docker/Dockerfile.model docker/Dockerfile.server \\
-     docker/build-and-push.sh docker/build-server-image.sh docker/build-for-k3s.sh \\
+   # From the controller, create the directory on the target and copy inputs:
+   ssh sandy007x@192.168.1.148 'mkdir -p ~/offrail-image-build/docker'
+   scp docker/Dockerfile.model docker/Dockerfile.server \
+     docker/build-and-push.sh docker/build-server-image.sh docker/build-for-k3s.sh \
      sandy007x@192.168.1.148:~/offrail-image-build/docker/
    ssh sandy007x@192.168.1.148 'chmod +x ~/offrail-image-build/docker/*.sh && ~/offrail-image-build/docker/build-for-k3s.sh'
    ```
@@ -115,8 +136,8 @@ ansible-playbook playbooks/cleanup_host_offrail.yml \\
 5. Cut over the backend only after both images have been imported and the GPU audit succeeds:
 
    ```bash
-   ansible-playbook playbooks/deploy_offrail.yml \\
-     -e cutover_legacy_llama=true \\
+   ansible-playbook playbooks/deploy_offrail.yml \
+     -e cutover_legacy_llama=true \
      --ask-pass --ask-become-pass
    ```
 
@@ -137,12 +158,12 @@ ansible-playbook playbooks/cleanup_host_offrail.yml \\
 
    ```bash
    MODEL_ID="$(curl -fsS http://127.0.0.1:8899/v1/models | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')"
-   curl -fsS http://127.0.0.1:8899/v1/chat/completions \\
-     -H 'Content-Type: application/json' \\
+   curl -fsS http://127.0.0.1:8899/v1/chat/completions \
+     -H 'Content-Type: application/json' \
      -d "$(MODEL_ID="$MODEL_ID" python3 -c 'import json,os; print(json.dumps({"model":os.environ["MODEL_ID"],"messages":[{"role":"user","content":"Reply with exactly: Offrail is online."}],"max_tokens":64,"stream":False}))')"
 
-   curl -fsS http://127.0.0.1:8899/v1/chat/completions \\
-     -H 'Content-Type: application/json' \\
+   curl -fsS http://127.0.0.1:8899/v1/chat/completions \
+     -H 'Content-Type: application/json' \
      -d "$(MODEL_ID="$MODEL_ID" python3 -c 'import json,os; print(json.dumps({"model":os.environ["MODEL_ID"],"messages":[{"role":"user","content":"Use the odysseus tool to check service status, then use the models tool to list available models."}],"tools":[{"type":"function","function":{"name":"odysseus","description":"Query Odysseus service status","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["status"]}},"required":["action"]}}},{"type":"function","function":{"name":"models","description":"List models available to Odysseus","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["list"]}},"required":["action"]}}}],"tool_choice":"auto","stream":False,"max_tokens":256}))')"
    ```
 
@@ -189,7 +210,7 @@ ansible-playbook playbooks/install_k3s.yml -e start_k3s=true --ask-pass --ask-be
 If K3s is absent, install it explicitly:
 
 ```bash
-ansible-playbook playbooks/install_k3s.yml -e install_k3s=true
+ansible-playbook playbooks/install_k3s.yml -e install_k3s=true --ask-pass --ask-become-pass
 ```
 
 The GPU Operator must be installed and healthy before deploying the model. This project installs the Operator (configured not to replace the working host driver), which installs/configures the toolkit and device plugin for K3s. The old hand-written device-plugin DaemonSet is not a GPU Operator and has been removed.
@@ -238,6 +259,8 @@ hosts-file mappings and must trust the self-signed certificate.
 
 - [TLS operations](docs/TLS_OPERATIONS.md)
 - [Offrail model use cases](docs/OFFRAIL_USE_CASES.md)
+- [Complete deployment and verification runbook](docs/DEPLOYMENT_AND_VERIFICATION.md)
+- [Verified target system specifications](docs/SYSTEM_SPECS.md)
 
 K3s restarts the deployment after a host reboot. The persistent volume retains the staged model. The init container recopies and SHA-256 verifies the model on pod start.
 

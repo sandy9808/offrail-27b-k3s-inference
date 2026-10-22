@@ -50,3 +50,17 @@ the K3s migration does not conflict with TLS. Do not enable a K3s Traefik
 Ingress on ports 80/443 unless this Nginx proxy is removed or the ports are
 redesigned.
 
+## Verify the proxy and backend
+
+From the target, check the model API directly and through the local TLS names:
+
+    curl -fsS http://127.0.0.1:8899/health
+    curl -k https://offrail-api.offrail.test/health
+    curl -k https://odysseus.offrail.test/api/health
+    sudo systemctl status nginx --no-pager
+
+The `-k` flag is suitable only for a temporary check of this self-signed
+certificate. For normal client use, trust the target certificate as described
+above. The full K3s, NVIDIA, API, and Odysseus validation sequence is in the
+[deployment and verification runbook](DEPLOYMENT_AND_VERIFICATION.md).
+

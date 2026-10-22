@@ -207,7 +207,7 @@ ansible-playbook playbooks/install_nvidia_gpu_operator.yml \
   --ask-pass --ask-become-pass
 ```
 
-The install requires Helm on the target. It leaves the host-installed NVIDIA driver in place (`driver.enabled=false`), configures the K3s containerd paths, waits for the GPU Operator ClusterPolicy, and requires K3s to advertise `nvidia.com/gpu` before succeeding.
+The install requires Helm on the target. It leaves the host-installed NVIDIA driver in place (`driver.enabled=false`) and configures the K3s containerd paths. Its containerd template extends K3s's `base` template before importing NVIDIA's runtime fragment; this preserves K3s's CNI paths and systemd cgroup settings. Restarting K3s applies the template when it changes. The playbook then waits for the node and GPU Operator ClusterPolicy and requires K3s to advertise `nvidia.com/gpu` before succeeding. The Operator's standalone CUDA workload validator is disabled because NVIDIA documents that GeForce does not support CUDA forward compatibility; actual GPU use is verified by running an Offrail completion and checking the server process in `nvidia-smi`.
 
 The cutover stops the existing host llama-server before starting the pod on port 8899. Run it only after publishing both the model image and custom server image, and confirming the GPU audit passes:
 

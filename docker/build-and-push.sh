@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 model_file="${MODEL_FILE:-Offrail-27B-8G.gguf}"
 image="${MODEL_IMAGE:-sandy007x/offrail-27b-8g:2026.10.17}"
+image_platform="linux/amd64"
 model_path="${repo_root}/docker/${model_file}"
 build_context="$(mktemp -d)"
 trap 'rm -rf "${build_context}"' EXIT
@@ -26,6 +27,7 @@ if ! ln "${model_path}" "${build_context}/${model_file}" 2>/dev/null; then
 fi
 cp "${repo_root}/docker/Dockerfile.model" "${build_context}/Dockerfile.model"
 docker build \
+  --platform "${image_platform}" \
   --build-arg "MODEL_FILE=${model_file}" \
   --build-arg "MODEL_SHA256=${model_sha256}" \
   --tag "${image}" \
@@ -33,4 +35,4 @@ docker build \
   "${build_context}"
 docker push "${image}"
 
-printf 'Pushed %s (model SHA-256 %s)\n' "${image}" "${model_sha256}"
+printf 'Pushed %s for %s (model SHA-256 %s)\n' "${image}" "${image_platform}" "${model_sha256}"

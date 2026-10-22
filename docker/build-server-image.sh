@@ -8,6 +8,7 @@ bundle_repo="sudoingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF"
 bundle_folder="bonsai2-small-gpu-linux-x64-cuda12.4-sm86-sm89-285542d"
 bundle_dir="${docker_dir}/runtime/${bundle_folder}"
 image="${SERVER_IMAGE:-sandy007x/offrail-llama-server:2026.10.20}"
+image_platform="linux/amd64"
 build_context="$(mktemp -d)"
 trap 'rm -rf "${build_context}"' EXIT
 
@@ -34,6 +35,6 @@ fi
 mkdir -p "${build_context}/runtime"
 cp -R "${bundle_dir}" "${build_context}/runtime/"
 cp "${docker_dir}/Dockerfile.server" "${build_context}/Dockerfile.server"
-docker build --tag "${image}" --file "${build_context}/Dockerfile.server" "${build_context}"
+docker build --platform "${image_platform}" --tag "${image}" --file "${build_context}/Dockerfile.server" "${build_context}"
 docker push "${image}"
-printf 'Pushed %s using the upstream sm86/sm89 custom runtime bundle.\n' "${image}"
+printf 'Pushed %s for %s using the upstream sm86/sm89 custom runtime bundle.\n' "${image}" "${image_platform}"

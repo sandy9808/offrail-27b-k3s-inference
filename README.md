@@ -101,7 +101,7 @@ ansible-playbook playbooks/cleanup_host_offrail.yml \\
    ansible-playbook playbooks/audit_nvidia.yml --ask-pass --ask-become-pass
    ```
 
-4. Build and push both images from this controller after placing the exact model file at `docker/Offrail-27B-8G.gguf` and logging in to Docker Hub interactively:
+4. Build and push both images from this controller after placing the exact model file at `docker/Offrail-27B-8G.gguf` and logging in to Docker Hub interactively. Both build scripts explicitly target `linux/amd64`, including when the controller is an Apple Silicon Mac; the NVIDIA runtime bundle itself is x86-64 and targets CUDA compute capabilities sm86/sm89:
 
    ```bash
    docker login -u sandy007x

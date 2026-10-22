@@ -101,15 +101,18 @@ ansible-playbook playbooks/cleanup_host_offrail.yml \\
    ansible-playbook playbooks/audit_nvidia.yml --ask-pass --ask-become-pass
    ```
 
-4. Build and push both images from this controller after placing the exact model file at `docker/Offrail-27B-8G.gguf` and logging in to Docker Hub interactively. Both build scripts explicitly target `linux/amd64`, including when the controller is an Apple Silicon Mac; the NVIDIA runtime bundle itself is x86-64 and targets CUDA compute capabilities sm86/sm89:
+4. Build both images directly on the Pop!_OS target and import them into K3s containerd. This uses the verified existing model at `/home/sandy007x/models/bonsai2-27b/Offrail-27B-8G.gguf` and avoids Docker Hub login or copying the multi-gigabyte model over the network. Both image build scripts explicitly target `linux/amd64`; the NVIDIA runtime bundle itself is x86-64 and targets CUDA compute capabilities sm86/sm89. Copy the build files to the target, then run the helper there:
 
    ```bash
-   docker login -u sandy007x
-   ./docker/build-and-push.sh
-   ./docker/build-server-image.sh
+   mkdir -p ~/offrail-image-build/docker
+   # From this repository checkout on the controller:
+   scp docker/Dockerfile.model docker/Dockerfile.server \\
+     docker/build-and-push.sh docker/build-server-image.sh docker/build-for-k3s.sh \\
+     sandy007x@192.168.1.148:~/offrail-image-build/docker/
+   ssh sandy007x@192.168.1.148 'chmod +x ~/offrail-image-build/docker/*.sh && ~/offrail-image-build/docker/build-for-k3s.sh'
    ```
 
-5. Cut over the backend only after both image pushes and the second GPU audit succeed:
+5. Cut over the backend only after both images have been imported and the GPU audit succeeds:
 
    ```bash
    ansible-playbook playbooks/deploy_offrail.yml \\

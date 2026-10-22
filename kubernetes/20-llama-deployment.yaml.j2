@@ -41,7 +41,7 @@ spec:
             - --host
             - {{ offrail_host | quote }}
             - --port
-            - {{ offrail_port | string | quote }}
+            - "{{ offrail_port }}"
             - -m
             - {{ ("/models/" ~ offrail_model_file) | quote }}
             - -ngl
@@ -49,7 +49,7 @@ spec:
             - -fa
             - "on"
             - -c
-            - {{ offrail_context_size | string | quote }}
+            - "{{ offrail_context_size }}"
             - -np
             - "1"
             - --temp

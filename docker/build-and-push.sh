@@ -5,7 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 model_file="${MODEL_FILE:-Offrail-27B-8G.gguf}"
 image="${MODEL_IMAGE:-sandy007x/offrail-27b-8g:2026.10.17}"
 image_platform="linux/amd64"
-model_path="${repo_root}/docker/${model_file}"
+model_path="${MODEL_PATH:-${repo_root}/docker/${model_file}}"
+model_file="$(basename "${model_path}")"
+push_image="${PUSH_IMAGE:-true}"
 build_context="$(mktemp -d)"
 trap 'rm -rf "${build_context}"' EXIT
 
@@ -33,6 +35,10 @@ docker build \
   --tag "${image}" \
   --file "${build_context}/Dockerfile.model" \
   "${build_context}"
-docker push "${image}"
-
-printf 'Pushed %s for %s (model SHA-256 %s)\n' "${image}" "${image_platform}" "${model_sha256}"
+if [[ "${push_image}" == "true" ]]; then
+  docker push "${image}"
+  printf 'Pushed %s for %s (model SHA-256 %s)\n' "${image}" "${image_platform}" "${model_sha256}"
+else
+  printf 'Built %s for %s locally (push skipped; model SHA-256 %s)\n' \
+    "${image}" "${image_platform}" "${model_sha256}"
+fi

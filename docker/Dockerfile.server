@@ -3,6 +3,6 @@
 # for the model's PTQ1_0 format; generic upstream llama.cpp images are not used.
 FROM ubuntu:22.04
 COPY runtime/bonsai2-small-gpu-linux-x64-cuda12.4-sm86-sm89-285542d/ /opt/offrail/
-ENV LD_LIBRARY_PATH=/opt/offrail:/opt/offrail/lib
+ENV LD_LIBRARY_PATH=/opt/offrail/lib
 WORKDIR /opt/offrail
-ENTRYPOINT ["/opt/offrail/llama-server"]
+ENTRYPOINT ["/opt/offrail/bin/llama-server"]

@@ -13,7 +13,7 @@ build_context="$(mktemp -d)"
 trap 'rm -rf "${build_context}"' EXIT
 
 mkdir -p "${docker_dir}/runtime"
-if [[ ! -x "${bundle_dir}/llama-server" ]]; then
+if [[ ! -x "${bundle_dir}/bin/llama-server" ]]; then
   archive="${docker_dir}/${bundle_name}"
   if [[ ! -f "${archive}" ]]; then
     curl -fL --retry 3 \
@@ -23,8 +23,8 @@ if [[ ! -x "${bundle_dir}/llama-server" ]]; then
   tar -xzf "${archive}" -C "${docker_dir}/runtime"
 fi
 
-if [[ ! -x "${bundle_dir}/llama-server" ]]; then
-  printf 'Expected custom llama-server not found at %s\n' "${bundle_dir}/llama-server" >&2
+if [[ ! -x "${bundle_dir}/bin/llama-server" ]]; then
+  printf 'Expected custom llama-server not found at %s\n' "${bundle_dir}/bin/llama-server" >&2
   exit 2
 fi
 if [[ ! -f "${bundle_dir}/serve-8gb.sh" ]]; then

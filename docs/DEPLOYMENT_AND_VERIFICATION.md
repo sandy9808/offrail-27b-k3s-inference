@@ -418,7 +418,65 @@ The deployment repair also recorded these actions and checks:
 For a complete live inventory, run the commands in
 [system specifications](SYSTEM_SPECS.md#recheck-and-complete-the-system-inventory).
 
-## 13. GitHub credentials and publishing
+## 13. Code fixes captured in this repository
+
+These are the code-level corrections behind the operational steps above:
+
+1. **K3s YAML argument types:** the Deployment's container `args` must all be
+   strings. The reported API error, `cannot unmarshal number into ... args of
+   type string`, was fixed by quoting the port and context values in
+   `kubernetes/20-llama-deployment.yaml.j2` (for example, `"8899"` and
+   `"65536"`). Numeric-looking flags are strings in Kubernetes YAML.
+2. **Custom llama-server location:** the runtime archive places the executable
+   at `bin/llama-server`. `docker/build-server-image.sh` now checks that path;
+   `docker/Dockerfile.server` starts `/opt/offrail/bin/llama-server` and sets
+   `LD_LIBRARY_PATH=/opt/offrail/lib`. This fixes the earlier build failure
+   that looked for a nonexistent `.../llama-server` at the bundle root.
+3. **amd64 builds and local K3s import:** both image build scripts use
+   `--platform linux/amd64`. `docker/build-for-k3s.sh` builds from the GGUF
+   already on the Pop!_OS target, skips registry pushes, and imports both
+   images into K3s containerd. The model build checks the pinned SHA-256.
+4. **K3s containerd/CNI preservation:** the NVIDIA runtime template includes
+   the runtime-fragment import and retains K3s's base settings:
+
+   ```toml
+   imports = ["/etc/containerd/conf.d/*.toml"]
+   {{ template "base" . }}
+   ```
+
+   The Operator install playbook backs up and installs this template, restarts
+   K3s when it changes, waits for the node to return Ready, then waits for
+   ClusterPolicy Ready and an allocatable `nvidia.com/gpu` resource. This
+   preserves K3s networking/cgroups while allowing the NVIDIA runtime.
+5. **GPU Operator configuration:** Helm leaves the Pop!_OS host driver in
+   place (`driver.enabled=false`), points the toolkit at K3s's containerd
+   config/socket and `nvidia` RuntimeClass, and sets the CUDA validator's
+   `WITH_WORKLOAD=false`. The old standalone device-plugin DaemonSet is
+   removed; the Operator supplies the toolkit and device plugin.
+6. **K3s permissions and startup:** Ansible tasks that invoke K3s kubectl run
+   with privilege so they can read `/etc/rancher/k3s/k3s.yaml`. If K3s is
+   installed but inactive, start it explicitly with
+   `playbooks/install_k3s.yml -e start_k3s=true`; deployment waits for the
+   Kubernetes node/API before applying resources.
+7. **Port 8899 and service routing:** the model uses `hostNetwork` and binds
+   to `127.0.0.1:8899` for Odysseus. The obsolete ClusterIP Service is removed
+   during deployment because the local-only host-network endpoint is the
+   intended route.
+
+The commands for reproducing these fixes and checking them are in §§3–10.
+The recorded successful manual commands include
+`ansible-playbook playbooks/install_nvidia_gpu_operator.yml` (the playbook
+syntax-check was also run), the live `nvidia-smi`/K3s/API commands listed in
+§§4, 7, and [system specifications](SYSTEM_SPECS.md), and
+`bash /home/sandy007x/odysseus/scripts/validate_odysseus_endpoint.sh` (5
+passed, 0 failed). The runbook presents copyable equivalents with interactive
+Ansible password prompts. It is an operational record, not a verbatim capture
+of every repository-inspection or shell housekeeping command. The standalone
+CUDA vector-add Pod was attempted while the model held the only GPU; it stayed
+Pending and was removed, so the running Offrail inference plus `nvidia-smi` is
+the GPU-use verification for that state.
+
+## 14. GitHub credentials and publishing
 
 A GitHub personal access token was pasted into chat earlier and must be treated
 as exposed. Revoke it in GitHub, then authenticate with a fresh credential

@@ -5,6 +5,8 @@ This is a separate deployment project for running the Offrail GGUF model in K3s.
 The complete command sequence, live verification results, and recovery steps
 are in the [deployment and verification runbook](docs/DEPLOYMENT_AND_VERIFICATION.md).
 Verified hardware and software details are in [system specifications](docs/SYSTEM_SPECS.md).
+That runbook also lists the specific code fixes for the K3s arguments, amd64
+image build, runtime executable path, and NVIDIA containerd configuration.
 
 ## Architecture
 

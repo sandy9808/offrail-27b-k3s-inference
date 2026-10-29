@@ -124,6 +124,8 @@
           - 15m
           - --set
           - driver.enabled=false
+          - --set
+          - toolkit.enabled={{ nvidia_toolkit_enabled | ternary('true', 'false') }}
           - --set-string
           - validator.cuda.env[0].name=WITH_WORKLOAD
           - --set-string

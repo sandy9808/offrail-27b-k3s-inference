@@ -379,7 +379,49 @@ staged GGUF; deleting it is irreversible without another model copy. Docker
 Hub images are not deleted by this playbook. It removes only the model image
 from local K3s containerd when `cleanup_remove_model_image=true`.
 
-## 12. Recorded work and verification results
+## 12. 2026-10-29 recovery
+
+On 2026-10-29 the node advertised `nvidia.com/gpu=0`, the Offrail pod was
+Pending, and `http://127.0.0.1:8899/health` was refused. The host driver was
+healthy (`nvidia-smi` showed the RTX 4060). The break was in the container
+runtime integration:
+
+- `/etc/containerd/config.toml` used `disabled_plugins = ["cri"]`. Containerd
+  rejected that short name (`invalid disabled plugin URI "cri"`), so
+  `containerd config dump` failed and the toolkit installer could not start.
+  The working value is `disabled_plugins = ["io.containerd.grpc.v1.cri"]`.
+- GPU sandboxes failed with `unknown version specified` because the NVIDIA
+  runtime preferred `/usr/bin/crun` 0.17, which does not understand the OCI
+  spec emitted by K3s containerd. The runtime list in
+  `/usr/local/nvidia/toolkit/.config/nvidia-container-runtime/config.toml`
+  was pointed at `/var/lib/rancher/k3s/data/current/bin/runc` first.
+- The toolkit installer v1.20.1 then panic'd in `ensureImports` while saving a
+  containerd 2 drop-in. The runtime files were already installed, so the
+  operator was upgraded with `toolkit.enabled=false`. ClusterPolicy returned
+  to `ready`. `nvidia_toolkit_enabled` in `group_vars/all.yml` records that
+  choice. Set it back to true only for a first install that still needs the
+  installer.
+
+With the GPU free, the vector-add smoke test was applied from
+`kubernetes/nvidia-vectoradd-one-shot.yaml`. Its log contained `Test PASSED`,
+and the pod was deleted. Offrail was scaled to 1. Both images were already in
+Docker and were imported into K3s containerd. The pod became `1/1` Ready.
+
+Verified on the target:
+
+- `curl http://127.0.0.1:8899/health` returned `{"status":"ok"}`.
+- `/v1/models` returned `/models/Offrail-27B-8G.gguf`.
+- The chat smoke test returned `Offrail is online.`
+- The tool-call smoke test returned `odysseus` with `{"action":"status"}` and
+  `models` with `{"action":"list"}`.
+- `nvidia-smi` showed `/opt/offrail/bin/llama-server` using about 7,258 MiB.
+- Device plugin, GPU feature discovery, DCGM exporter, and the operator
+  validator were Running. ClusterPolicy was `ready`.
+
+Public access for the Odysseus web UI, not the inference port, is recorded in
+[Tailscale exposure](TAILSCALE_EXPOSURE.md).
+
+## 13. Recorded work and verification results
 
 The following work was recorded on the target during the deployment repair.
 A read-only live check on 2026-10-22 confirmed:

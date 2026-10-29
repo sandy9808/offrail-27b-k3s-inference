@@ -260,6 +260,7 @@ playbooks/configure_https.yml to reconcile it. Client devices need matching
 hosts-file mappings and must trust the self-signed certificate.
 
 - [TLS operations](docs/TLS_OPERATIONS.md)
+- [Tailscale exposure and the private HTTPS proxy](docs/TAILSCALE_EXPOSURE.md)
 - [Offrail model use cases](docs/OFFRAIL_USE_CASES.md)
 - [Complete deployment and verification runbook](docs/DEPLOYMENT_AND_VERIFICATION.md)
 - [Verified target system specifications](docs/SYSTEM_SPECS.md)

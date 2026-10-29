@@ -26,6 +26,11 @@ nvidia_gpu_operator_version: v26.7.2
 nvidia_gpu_operator_release: gpu-operator
 nvidia_gpu_operator_namespace: gpu-operator
 nvidia_gpu_smoke_test: true
+# The v1.20.1 toolkit installer panics while saving a containerd 2 drop-in
+# after the runtime is already installed on this host. Leave this false so a
+# later playbook run does not bring that crash loop back. Set it true only
+# for a first install on a machine that does not yet have /usr/local/nvidia/toolkit.
+nvidia_toolkit_enabled: false
 
 # Retains the existing local-only integration: host Odysseus calls this endpoint.
 offrail_host: 127.0.0.1
